@@ -34,8 +34,14 @@ photos = Table(
     UniqueConstraint("telegram_id", "position", name="uq_user_photo_position"),
 )
 
-# Create Async Engine
-engine = create_async_engine(DATABASE_URL, echo=False)
+# Create Async Engine with connection pool for concurrency
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=5,          # Number of connections to keep open
+    max_overflow=10,      # Extra connections when pool is full
+    pool_pre_ping=True,   # Check connection health before use
+)
 
 
 async def init_db():
