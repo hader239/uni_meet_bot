@@ -485,8 +485,13 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
         return
     
-    # Create application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Database initialization callback (runs in the bot's event loop)
+    async def post_init(application):
+        await db.init_db()
+        logger.info("Database initialized")
+    
+    # Create application with post_init hook
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
     # Create conversation handler
     conv_handler = ConversationHandler(
@@ -531,10 +536,6 @@ def main() -> None:
     # Add handlers
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("help", help_command))
-    
-    # Initialize database on startup
-    import asyncio
-    asyncio.run(db.init_db())
     
     # Start the bot
     logger.info("Starting bot...")
