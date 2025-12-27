@@ -1,70 +1,77 @@
-"""Database operations for the Student Meetup Bot using SQLite."""
+"""Database operations for the Student Meetup Bot using SQLAlchemy."""
 
-import aiosqlite
 from datetime import datetime
-from config import DATABASE_PATH
+from sqlalchemy import (
+    MetaData, Table, Column, Integer, BigInteger, String, DateTime, ForeignKey, 
+    UniqueConstraint, select, update, delete, insert
+)
+from sqlalchemy.ext.asyncio import create_async_engine
+from config import DATABASE_URL
+
+# SQLAlchemy Setup
+metadata = MetaData()
+
+# Define Tables
+users = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("telegram_id", BigInteger, unique=True, nullable=False),
+    Column("university", String),
+    Column("program", String),
+    Column("bio", String),
+    Column("created_at", DateTime, default=datetime.now),
+    Column("updated_at", DateTime, default=datetime.now, onupdate=datetime.now),
+)
+
+photos = Table(
+    "photos",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("telegram_id", BigInteger, ForeignKey("users.telegram_id"), nullable=False),
+    Column("file_id", String, nullable=False),
+    Column("position", Integer, nullable=False),
+    UniqueConstraint("telegram_id", "position", name="uq_user_photo_position"),
+)
+
+# Create Async Engine
+engine = create_async_engine(DATABASE_URL, echo=False)
 
 
 async def init_db():
     """Initialize the database and create tables if they don't exist."""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Create users table
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER UNIQUE NOT NULL,
-                university TEXT,
-                program TEXT,
-                bio TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Create photos table
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS photos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER NOT NULL,
-                file_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                FOREIGN KEY (telegram_id) REFERENCES users (telegram_id),
-                UNIQUE (telegram_id, position)
-            )
-        """)
-        
-        await db.commit()
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
 
 
 async def get_profile(telegram_id: int) -> dict | None:
     """Get a user's profile by their Telegram ID."""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
+    async with engine.connect() as conn:
         # Get user data
-        async with db.execute(
-            "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            user_row = await cursor.fetchone()
-        
+        stmt = select(users).where(users.c.telegram_id == telegram_id)
+        result = await conn.execute(stmt)
+        user_row = result.fetchone()
+
         if not user_row:
             return None
-        
+
         # Get photos
-        async with db.execute(
-            "SELECT file_id, position FROM photos WHERE telegram_id = ? ORDER BY position",
-            (telegram_id,)
-        ) as cursor:
-            photo_rows = await cursor.fetchall()
-        
+        stmt_photos = (
+            select(photos.c.file_id)
+            .where(photos.c.telegram_id == telegram_id)
+            .order_by(photos.c.position)
+        )
+        result_photos = await conn.execute(stmt_photos)
+        photo_file_ids = [row[0] for row in result_photos.fetchall()]
+
         return {
-            "telegram_id": user_row["telegram_id"],
-            "university": user_row["university"],
-            "program": user_row["program"],
-            "bio": user_row["bio"],
-            "photos": [row["file_id"] for row in photo_rows],
-            "created_at": user_row["created_at"],
-            "updated_at": user_row["updated_at"],
+            "telegram_id": user_row.telegram_id,
+            "university": user_row.university,
+            "program": user_row.program,
+            "bio": user_row.bio,
+            "photos": photo_file_ids,
+            "created_at": user_row.created_at,
+            "updated_at": user_row.updated_at,
         }
 
 
@@ -75,68 +82,69 @@ async def save_profile(
     bio: str | None = None,
 ):
     """Save or update a user's profile."""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    # Build values dictionary with only non-None values
+    values = {}
+    if university is not None:
+        values["university"] = university
+    if program is not None:
+        values["program"] = program
+    if bio is not None:
+        values["bio"] = bio
+
+
+    async with engine.begin() as conn:
         # Check if user exists
-        async with db.execute(
-            "SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            exists = await cursor.fetchone()
-        
+        stmt_check = select(users.c.id).where(users.c.telegram_id == telegram_id)
+        result = await conn.execute(stmt_check)
+        exists = result.scalar_one_or_none()
+
         if exists:
-            # Update existing user - only update non-None fields
-            updates = []
-            params = []
-            
-            if university is not None:
-                updates.append("university = ?")
-                params.append(university)
-            if program is not None:
-                updates.append("program = ?")
-                params.append(program)
-            if bio is not None:
-                updates.append("bio = ?")
-                params.append(bio)
-            
-            if updates:
-                updates.append("updated_at = ?")
-                params.append(datetime.now().isoformat())
-                params.append(telegram_id)
-                
-                query = f"UPDATE users SET {', '.join(updates)} WHERE telegram_id = ?"
-                await db.execute(query, params)
+            if values:
+                values["updated_at"] = datetime.now()
+                stmt_update = (
+                    update(users)
+                    .where(users.c.telegram_id == telegram_id)
+                    .values(**values)
+                )
+                await conn.execute(stmt_update)
         else:
             # Insert new user
-            await db.execute(
-                """
-                INSERT INTO users (telegram_id, university, program, bio)
-                VALUES (?, ?, ?, ?)
-                """,
-                (telegram_id, university, program, bio),
-            )
-        
-        await db.commit()
+            # Ensure we insert required fields even if None (though schema allows nulls mostly)
+            # But telegram_id is required.
+            insert_values = {
+                "telegram_id": telegram_id,
+                "university": university,
+                "program": program,
+                "bio": bio
+            }
+            stmt_insert = insert(users).values(**insert_values)
+            await conn.execute(stmt_insert)
 
 
 async def save_photos(telegram_id: int, photo_file_ids: list[str]):
     """Save photos for a user, replacing any existing photos."""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with engine.begin() as conn:
         # Delete existing photos
-        await db.execute("DELETE FROM photos WHERE telegram_id = ?", (telegram_id,))
-        
+        stmt_delete = delete(photos).where(photos.c.telegram_id == telegram_id)
+        await conn.execute(stmt_delete)
+
         # Insert new photos
-        for position, file_id in enumerate(photo_file_ids, start=1):
-            await db.execute(
-                "INSERT INTO photos (telegram_id, file_id, position) VALUES (?, ?, ?)",
-                (telegram_id, file_id, position),
-            )
-        
-        await db.commit()
+        if photo_file_ids:
+            values_list = [
+                {
+                    "telegram_id": telegram_id,
+                    "file_id": file_id,
+                    "position": i
+                }
+                for i, file_id in enumerate(photo_file_ids, start=1)
+            ]
+            stmt_insert = insert(photos).values(values_list)
+            await conn.execute(stmt_insert)
 
 
 async def profile_exists(telegram_id: int) -> bool:
     """Check if a user has a profile."""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
-            "SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            return await cursor.fetchone() is not None
+    async with engine.connect() as conn:
+        stmt = select(users.c.id).where(users.c.telegram_id == telegram_id)
+        result = await conn.execute(stmt)
+        return result.scalar_one_or_none() is not None
