@@ -5,7 +5,7 @@ from sqlalchemy import (
     MetaData, Table, Column, Integer, BigInteger, String, DateTime, ForeignKey, 
     UniqueConstraint, select, update, delete, insert
 )
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from config import DATABASE_URL
 
 # SQLAlchemy Setup
@@ -34,24 +34,34 @@ photos = Table(
     UniqueConstraint("telegram_id", "position", name="uq_user_photo_position"),
 )
 
-# Create Async Engine with connection pool for concurrency
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_size=5,          # Number of connections to keep open
-    max_overflow=10,      # Extra connections when pool is full
-    pool_pre_ping=True,   # Check connection health before use
-)
+# Lazy engine initialization to avoid event loop issues
+_engine: AsyncEngine | None = None
+
+
+def get_engine() -> AsyncEngine:
+    """Get or create the async engine (lazy initialization)."""
+    global _engine
+    if _engine is None:
+        _engine = create_async_engine(
+            DATABASE_URL,
+            echo=False,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+        )
+    return _engine
 
 
 async def init_db():
     """Initialize the database and create tables if they don't exist."""
+    engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(metadata.create_all)
 
 
 async def get_profile(telegram_id: int) -> dict | None:
     """Get a user's profile by their Telegram ID."""
+    engine = get_engine()
     async with engine.connect() as conn:
         # Get user data
         stmt = select(users).where(users.c.telegram_id == telegram_id)
@@ -88,7 +98,7 @@ async def save_profile(
     bio: str | None = None,
 ):
     """Save or update a user's profile."""
-    # Build values dictionary with only non-None values
+    engine = get_engine()
     values = {}
     if university is not None:
         values["university"] = university
@@ -96,7 +106,6 @@ async def save_profile(
         values["program"] = program
     if bio is not None:
         values["bio"] = bio
-
 
     async with engine.begin() as conn:
         # Check if user exists
@@ -114,9 +123,6 @@ async def save_profile(
                 )
                 await conn.execute(stmt_update)
         else:
-            # Insert new user
-            # Ensure we insert required fields even if None (though schema allows nulls mostly)
-            # But telegram_id is required.
             insert_values = {
                 "telegram_id": telegram_id,
                 "university": university,
@@ -129,6 +135,7 @@ async def save_profile(
 
 async def save_photos(telegram_id: int, photo_file_ids: list[str]):
     """Save photos for a user, replacing any existing photos."""
+    engine = get_engine()
     async with engine.begin() as conn:
         # Delete existing photos
         stmt_delete = delete(photos).where(photos.c.telegram_id == telegram_id)
@@ -150,6 +157,7 @@ async def save_photos(telegram_id: int, photo_file_ids: list[str]):
 
 async def profile_exists(telegram_id: int) -> bool:
     """Check if a user has a profile."""
+    engine = get_engine()
     async with engine.connect() as conn:
         stmt = select(users.c.id).where(users.c.telegram_id == telegram_id)
         result = await conn.execute(stmt)
