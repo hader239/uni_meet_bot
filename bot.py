@@ -15,7 +15,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import BOT_TOKEN, MAX_PHOTOS
+from config import BOT_TOKEN, MAX_PHOTOS, PORT, WEBHOOK_URL
 import database as db
 
 # Enable logging
@@ -538,7 +538,21 @@ def main() -> None:
     
     # Start the bot
     logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    if WEBHOOK_URL:
+        # Production mode: use webhooks (Railway)
+        logger.info(f"Running with webhooks on port {PORT}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=f"https://{WEBHOOK_URL}/{BOT_TOKEN}",
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        # Development mode: use long polling
+        logger.info("Running with long polling (no WEBHOOK_URL set)")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
