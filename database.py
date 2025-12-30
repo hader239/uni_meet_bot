@@ -2,8 +2,8 @@
 
 from datetime import datetime
 from sqlalchemy import (
-    MetaData, Table, Column, Integer, BigInteger, String, DateTime, ForeignKey, 
-    UniqueConstraint, select, update, delete, insert
+    MetaData, Table, Column, BigInteger, Text, DateTime,
+    select, update, insert, ARRAY, inspect
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from config import DATABASE_URL
@@ -11,27 +11,17 @@ from config import DATABASE_URL
 # SQLAlchemy Setup
 metadata = MetaData()
 
-# Define Tables
+# Single users table with photos as array
 users = Table(
     "users",
     metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("telegram_id", BigInteger, unique=True, nullable=False),
-    Column("university", String),
-    Column("program", String),
-    Column("bio", String),
+    Column("telegram_id", BigInteger, primary_key=True),
+    Column("university", Text),
+    Column("program", Text),
+    Column("bio", Text),
+    Column("photos", ARRAY(Text)),  # Array of photo file_ids
     Column("created_at", DateTime, default=datetime.now),
     Column("updated_at", DateTime, default=datetime.now, onupdate=datetime.now),
-)
-
-photos = Table(
-    "photos",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("telegram_id", BigInteger, ForeignKey("users.telegram_id"), nullable=False),
-    Column("file_id", String, nullable=False),
-    Column("position", Integer, nullable=False),
-    UniqueConstraint("telegram_id", "position", name="uq_user_photo_position"),
 )
 
 # Lazy engine initialization to avoid event loop issues
@@ -52,18 +42,30 @@ def get_engine() -> AsyncEngine:
     return _engine
 
 
-async def init_db():
-    """Initialize the database and create tables if they don't exist."""
+async def init_db() -> bool:
+    """Initialize the database and create tables if they don't exist.
+    
+    Returns:
+        True if tables were created, False if they already existed.
+    """
     engine = get_engine()
     async with engine.begin() as conn:
+        # Check if table exists before creating
+        tables_before = await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).get_table_names()
+        )
+        existed = "users" in tables_before
+        
+        # create_all is idempotent - only creates if not exists
         await conn.run_sync(metadata.create_all)
+        
+        return not existed
 
 
 async def get_profile(telegram_id: int) -> dict | None:
     """Get a user's profile by their Telegram ID."""
     engine = get_engine()
     async with engine.connect() as conn:
-        # Get user data
         stmt = select(users).where(users.c.telegram_id == telegram_id)
         result = await conn.execute(stmt)
         user_row = result.fetchone()
@@ -71,21 +73,12 @@ async def get_profile(telegram_id: int) -> dict | None:
         if not user_row:
             return None
 
-        # Get photos
-        stmt_photos = (
-            select(photos.c.file_id)
-            .where(photos.c.telegram_id == telegram_id)
-            .order_by(photos.c.position)
-        )
-        result_photos = await conn.execute(stmt_photos)
-        photo_file_ids = [row[0] for row in result_photos.fetchall()]
-
         return {
             "telegram_id": user_row.telegram_id,
             "university": user_row.university,
             "program": user_row.program,
             "bio": user_row.bio,
-            "photos": photo_file_ids,
+            "photos": user_row.photos or [],  # Return empty list if None
             "created_at": user_row.created_at,
             "updated_at": user_row.updated_at,
         }
@@ -96,6 +89,7 @@ async def save_profile(
     university: str | None = None,
     program: str | None = None,
     bio: str | None = None,
+    photos: list[str] | None = None,
 ):
     """Save or update a user's profile."""
     engine = get_engine()
@@ -106,10 +100,12 @@ async def save_profile(
         values["program"] = program
     if bio is not None:
         values["bio"] = bio
+    if photos is not None:
+        values["photos"] = photos
 
     async with engine.begin() as conn:
         # Check if user exists
-        stmt_check = select(users.c.id).where(users.c.telegram_id == telegram_id)
+        stmt_check = select(users.c.telegram_id).where(users.c.telegram_id == telegram_id)
         result = await conn.execute(stmt_check)
         exists = result.scalar_one_or_none()
 
@@ -127,38 +123,22 @@ async def save_profile(
                 "telegram_id": telegram_id,
                 "university": university,
                 "program": program,
-                "bio": bio
+                "bio": bio,
+                "photos": photos or [],
             }
             stmt_insert = insert(users).values(**insert_values)
             await conn.execute(stmt_insert)
 
 
 async def save_photos(telegram_id: int, photo_file_ids: list[str]):
-    """Save photos for a user, replacing any existing photos."""
-    engine = get_engine()
-    async with engine.begin() as conn:
-        # Delete existing photos
-        stmt_delete = delete(photos).where(photos.c.telegram_id == telegram_id)
-        await conn.execute(stmt_delete)
-
-        # Insert new photos
-        if photo_file_ids:
-            values_list = [
-                {
-                    "telegram_id": telegram_id,
-                    "file_id": file_id,
-                    "position": i
-                }
-                for i, file_id in enumerate(photo_file_ids, start=1)
-            ]
-            stmt_insert = insert(photos).values(values_list)
-            await conn.execute(stmt_insert)
+    """Save photos for a user (convenience function)."""
+    await save_profile(telegram_id, photos=photo_file_ids)
 
 
 async def profile_exists(telegram_id: int) -> bool:
     """Check if a user has a profile."""
     engine = get_engine()
     async with engine.connect() as conn:
-        stmt = select(users.c.id).where(users.c.telegram_id == telegram_id)
+        stmt = select(users.c.telegram_id).where(users.c.telegram_id == telegram_id)
         result = await conn.execute(stmt)
         return result.scalar_one_or_none() is not None
