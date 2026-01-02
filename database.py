@@ -2,8 +2,8 @@
 
 from datetime import datetime
 from sqlalchemy import (
-    MetaData, Table, Column, BigInteger, Text, DateTime,
-    select, update, insert, ARRAY, inspect
+    MetaData, Table, Column, BigInteger, Text, DateTime, Boolean, Integer,
+    ForeignKey, select, update, insert, ARRAY, inspect
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from config import DATABASE_URL
@@ -11,7 +11,7 @@ from config import DATABASE_URL
 # SQLAlchemy Setup
 metadata = MetaData()
 
-# Single users table with photos as array
+# Users table with photos as array
 users = Table(
     "users",
     metadata,
@@ -19,9 +19,20 @@ users = Table(
     Column("university", Text),
     Column("program", Text),
     Column("bio", Text),
-    Column("photos", ARRAY(Text)),  # Array of photo file_ids
+    Column("photos", ARRAY(Text)),
     Column("created_at", DateTime, default=datetime.now),
     Column("updated_at", DateTime, default=datetime.now, onupdate=datetime.now),
+)
+
+# Likes table to track user interactions
+likes = Table(
+    "likes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", BigInteger, ForeignKey("users.telegram_id"), nullable=False),
+    Column("target_user_id", BigInteger, ForeignKey("users.telegram_id"), nullable=False),
+    Column("is_like", Boolean, nullable=False),  # True = like, False = pass
+    Column("created_at", DateTime, default=datetime.now),
 )
 
 # Lazy engine initialization to avoid event loop issues
@@ -142,3 +153,67 @@ async def profile_exists(telegram_id: int) -> bool:
         stmt = select(users.c.telegram_id).where(users.c.telegram_id == telegram_id)
         result = await conn.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+
+async def get_next_profile(telegram_id: int) -> dict | None:
+    """Get the next profile to show (one the user hasn't interacted with yet).
+    
+    Returns a random profile that:
+    - Is not the user's own profile
+    - Has not been liked or passed by this user
+    """
+    engine = get_engine()
+    async with engine.connect() as conn:
+        # Get IDs of users this person has already interacted with
+        seen_stmt = select(likes.c.target_user_id).where(likes.c.user_id == telegram_id)
+        seen_result = await conn.execute(seen_stmt)
+        seen_ids = [row[0] for row in seen_result.fetchall()]
+        seen_ids.append(telegram_id)  # Exclude own profile
+        
+        # Get a random unseen profile
+        from sqlalchemy.sql.expression import func
+        stmt = (
+            select(users)
+            .where(users.c.telegram_id.notin_(seen_ids))
+            .order_by(func.random())
+            .limit(1)
+        )
+        result = await conn.execute(stmt)
+        row = result.fetchone()
+        
+        if not row:
+            return None
+        
+        return {
+            "telegram_id": row.telegram_id,
+            "university": row.university,
+            "program": row.program,
+            "bio": row.bio,
+            "photos": row.photos or [],
+        }
+
+
+async def record_interaction(user_id: int, target_user_id: int, is_like: bool):
+    """Record a like or pass interaction."""
+    engine = get_engine()
+    async with engine.begin() as conn:
+        stmt = insert(likes).values(
+            user_id=user_id,
+            target_user_id=target_user_id,
+            is_like=is_like,
+        )
+        await conn.execute(stmt)
+
+
+async def check_mutual_like(user_id: int, target_user_id: int) -> bool:
+    """Check if there's a mutual like between two users."""
+    engine = get_engine()
+    async with engine.connect() as conn:
+        stmt = select(likes).where(
+            likes.c.user_id == target_user_id,
+            likes.c.target_user_id == user_id,
+            likes.c.is_like == True,
+        )
+        result = await conn.execute(stmt)
+        return result.fetchone() is not None
+

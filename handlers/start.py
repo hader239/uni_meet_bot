@@ -5,11 +5,12 @@ from telegram.ext import ContextTypes
 
 import database as db
 from constants import (
-    HOMEPAGE, AWAITING_PHOTOS, EDIT_MENU,
-    BTN_FILL_PROFILE, BTN_EDIT_PROFILE, BTN_VIEW_PROFILE,
+    HOMEPAGE, AWAITING_PHOTOS, EDIT_MENU, BROWSING,
+    BTN_FILL_PROFILE, BTN_EDIT_PROFILE, BTN_VIEW_PROFILE, BTN_SEARCH,
 )
 from keyboards import get_homepage_keyboard, get_edit_menu_keyboard, get_photo_upload_keyboard
 from config import MAX_PHOTOS
+from handlers.browse import show_next_profile
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -62,6 +63,9 @@ async def homepage_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             parse_mode="Markdown",
         )
         return EDIT_MENU
+    
+    elif text == BTN_SEARCH:
+        return await show_next_profile(update, context)
     
     elif text == BTN_VIEW_PROFILE:
         profile = await db.get_profile(user.id)

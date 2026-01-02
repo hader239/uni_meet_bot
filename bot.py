@@ -18,8 +18,8 @@ from config import BOT_TOKEN, PORT, WEBHOOK_URL
 import database as db
 from constants import (
     HOMEPAGE, AWAITING_PHOTOS, AWAITING_UNIVERSITY, AWAITING_PROGRAM, AWAITING_BIO,
-    EDIT_MENU, EDIT_PHOTOS, EDIT_UNIVERSITY, EDIT_PROGRAM, EDIT_BIO,
-    BTN_DONE_PHOTOS, BTN_CANCEL_EDITING,
+    EDIT_MENU, EDIT_PHOTOS, EDIT_UNIVERSITY, EDIT_PROGRAM, EDIT_BIO, BROWSING,
+    BTN_DONE_PHOTOS, BTN_CANCEL_EDITING, BTN_LIKE, BTN_PASS, BTN_STOP_BROWSING,
 )
 from handlers import (
     start_handler, homepage_handler, help_handler, cancel_handler,
@@ -29,6 +29,7 @@ from handlers import (
     edit_photos_handler, edit_photos_done_handler,
     edit_university_handler, edit_program_handler, edit_bio_handler,
     cancel_editing_handler,
+    start_browsing_handler, like_handler, pass_handler, stop_browsing_handler,
 )
 
 # Enable logging
@@ -104,6 +105,11 @@ def main() -> None:
             EDIT_BIO: [
                 MessageHandler(filters.Regex(f"^{BTN_CANCEL_EDITING}$"), cancel_editing_handler),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_bio_handler),
+            ],
+            BROWSING: [
+                MessageHandler(filters.Regex(f"^{BTN_LIKE}$"), like_handler),
+                MessageHandler(filters.Regex(f"^{BTN_PASS}$"), pass_handler),
+                MessageHandler(filters.Regex(f"^{BTN_STOP_BROWSING}$"), stop_browsing_handler),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel_handler), CommandHandler("start", start_handler)],

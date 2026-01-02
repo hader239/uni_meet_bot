@@ -11,6 +11,9 @@ from handlers.edit_profile import (
     edit_university_handler, edit_program_handler, edit_bio_handler,
     cancel_editing_handler,
 )
+from handlers.browse import (
+    start_browsing_handler, like_handler, pass_handler, stop_browsing_handler,
+)
 
 __all__ = [
     # Start handlers
@@ -23,4 +26,6 @@ __all__ = [
     "edit_photos_handler", "edit_photos_done_handler",
     "edit_university_handler", "edit_program_handler", "edit_bio_handler",
     "cancel_editing_handler",
+    # Browse handlers
+    "start_browsing_handler", "like_handler", "pass_handler", "stop_browsing_handler",
 ]
